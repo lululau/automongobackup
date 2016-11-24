@@ -1,5 +1,9 @@
 #!/bin/bash
 set -eo pipefail
+
+export LANG=C
+export LC_ALL=C
+
 #
 # MongoDB Backup Script
 # VER. 0.20
@@ -29,9 +33,9 @@ set -eo pipefail
 # (Detailed instructions below variables)
 #=====================================================================
 
-# Database name to specify a specific database only e.g. myawesomeapp
+# Database name to specify specific databases (comma separated) only e.g. myawesomeapp
 # Unnecessary if backup all databases
-# DBNAME=""
+DBNAME="test"
 
 # Collections name list to include e.g. system.profile users
 # DBNAME is required
@@ -56,13 +60,13 @@ set -eo pipefail
 # DBAUTHDB=""
 
 # Host name (or IP address) of mongo server e.g localhost
-DBHOST="127.0.0.1"
+DBHOST="10.132.1.231"
 
 # Port that mongo is listening on
-DBPORT="27017"
+DBPORT="37017"
 
 # Backup directory location e.g /backups
-BACKUPDIR="/var/backups/mongodb"
+BACKUPDIR="/home/deploy/liuxiang/amb"
 
 # Mail setup
 # What would you like to be mailed to you?
@@ -83,21 +87,21 @@ export MAXATTSIZE="4000"
 #=============================================================================
 
 # Do you want to do hourly backups? How long do you want to keep them?
-DOHOURLY="no"
+DOHOURLY="yes"
 HOURLYRETENTION=24
 
 # Do you want to do daily backups? How long do you want to keep them?
 DODAILY="yes"
-DAILYRETENTION=0
+DAILYRETENTION=30
 
 # Which day do you want weekly backups? (1 to 7 where 1 is Monday)
 DOWEEKLY="yes"
 WEEKLYDAY=6
-WEEKLYRETENTION=4
+WEEKLYRETENTION=12
 
 # Do you want monthly backups? How long do you want to keep them?
 DOMONTHLY="yes"
-MONTHLYRETENTION=4
+MONTHLYRETENTION=12
 
 # ============================================================
 # === ADVANCED OPTIONS ( Read the doc's below for details )===
@@ -116,7 +120,7 @@ LATEST="yes"
 LATESTLINK="yes"
 
 # Use oplog for point-in-time snapshotting.
-OPLOG="yes"
+OPLOG="no"
 
 # Choose other Server if is Replica-Set Master
 REPLICAONSLAVE="yes"
@@ -308,6 +312,21 @@ done
 
 #=====================================================================
 
+function cp() {
+    command cp "$@"
+    if [ -n "$TIME_TRAVEL" ]; then
+        touch -m -d "$TIME_TRAVEL" "${!#}"
+    fi
+}
+
+function date() {
+    if [ -n "$TIME_TRAVEL" ]; then
+        command date -d "$TIME_TRAVEL" "$@"
+    else
+        command date "$@"
+    fi
+}
+
 PATH=/usr/local/bin:/usr/bin:/bin
 DATE=$(date +%Y-%m-%d_%Hh%Mm)                     # Datestamp e.g 2002-09-21
 HOD=$(date +%s)                                   # Current timestamp for PITR backup
@@ -345,11 +364,6 @@ if [ "$OPLOG" = "yes" ]; then
     OPT="$OPT --oplog"
 fi
 
-# Do we need to backup only a specific database?
-if [ "$DBNAME" ]; then
-  OPT="$OPT -d $DBNAME"
-fi
-
 # Do we need to backup only a specific collections?
 if [ "$COLLECTIONS" ]; then
   for x in $COLLECTIONS; do
@@ -364,46 +378,12 @@ if [ "$EXCLUDE_COLLECTIONS" ]; then
   done
 fi
 
-# Do we use a filter for hourly point-in-time snapshotting?
-if [ "$DOHOURLY" == "yes" ]; then
-
-  # getting PITR START timestamp
-  # shellcheck disable=SC2012
-  [ "$COMP" = "gzip" ] && HOURLYQUERY=$(ls -t $BACKUPDIR/hourly | head -n 1 | cut -d '.' -f3)
-
-  # setting the start timestamp to NOW for the first execution
-  if [ -z "$HOURLYQUERY" ]; then
-      QUERY=""
-    else
-      # limit the documents included in the output of mongodump
-      # shellcheck disable=SC2016
-      QUERY='{ "ts" : { $gt :  Timestamp('$HOURLYQUERY', 1) } }'
-  fi
-fi
-
 # Create required directories
 mkdir -p $BACKUPDIR/{hourly,daily,weekly,monthly} || shellout 'failed to create directories'
 
 if [ "$LATEST" = "yes" ]; then
     rm -rf "$BACKUPDIR/latest"
     mkdir -p "$BACKUPDIR/latest" || shellout 'failed to create directory'
-fi
-
-# Do we use a filter for hourly point-in-time snapshotting?
-if [ "$DOHOURLY" == "yes" ]; then
-
-  # getting PITR START timestamp
-  # shellcheck disable=SC2012
-  [ "$COMP" = "gzip" ] && HOURLYQUERY=$(ls -t $BACKUPDIR/hourly | head -n 1 | cut -d '.' -f3)
-
-  # setting the start timestamp to NOW for the first execution
-  if [ -z "$HOURLYQUERY" ]; then
-      QUERY=""
-    else
-      # limit the documents included in the output of mongodump
-      # shellcheck disable=SC2016
-      QUERY='{ "ts" : { $gt :  Timestamp('$HOURLYQUERY', 1) } }'
-  fi
 fi
 
 # Check for correct sed usage
@@ -434,11 +414,23 @@ dbdump () {
     if [ -n "$QUERY" ]; then
         # filter for point-in-time snapshotting and if DOHOURLY=yes
         # shellcheck disable=SC2086
-        mongodump --quiet --host=$DBHOST:$DBPORT --out="$1" $OPT -q "$QUERY"
+        if [ -n "$DBNAME" ]; then
+            for db_name in $(echo ${DBNAME//,/$'\n'}); do
+                mongodump --quiet --host=$DBHOST:$DBPORT --out="$1" -d "$db_name" $OPT -q "$QUERY"
+            done
+        else
+            mongodump --quiet --host=$DBHOST:$DBPORT --out="$1" $OPT -q "$QUERY"
+        fi
       else
         # all others backups type
         # shellcheck disable=SC2086
-        mongodump --quiet --host=$DBHOST:$DBPORT --out="$1" $OPT
+        if [ -n "$DBNAME" ]; then
+            for db_name in $(echo ${DBNAME//,/$'\n'}); do
+                mongodump --quiet --host=$DBHOST:$DBPORT --out="$1" -d "$db_name" $OPT
+            done
+        else
+            mongodump --quiet --host=$DBHOST:$DBPORT --out="$1" $OPT
+        fi
     fi
     [ -e "$1" ] && return 0
     echo "ERROR: mongodump failed to create dumpfile: $1" >&2
@@ -487,10 +479,16 @@ function select_secondary_member {
 if [ -n "$MAXFILESIZE" ]; then
     write_file() {
         split --bytes "$MAXFILESIZE" --numeric-suffixes - "${1}-"
+        if [ -n "$TIME_TRAVEL" ]; then
+            touch -m -d "$TIME_TRAVEL" "${1}-"*
+        fi
     }
 else
     write_file() {
         cat > "$1"
+        if [ -n "$TIME_TRAVEL" ]; then
+            touch -m -d "$TIME_TRAVEL" "$1"
+        fi
     }
 fi
 
@@ -575,63 +573,108 @@ echo ======================================================================
 
 echo "Backup Start $(date)"
 echo ======================================================================
-# Monthly Full Backup of all Databases
-if [[ $DOM = "01" ]] && [[ $DOMONTHLY = "yes" ]]; then
-    echo Monthly Full Backup
-    echo
-    # Delete old monthly backups while respecting the set rentention policy.
-    if [[ $MONTHLYRETENTION -ge 0 ]] ; then
-        NUM_OLD_FILES=$(find $BACKUPDIR/monthly -depth -not -newermt "$MONTHLYRETENTION month ago" -type f | wc -l)
-        if [[ $NUM_OLD_FILES -gt 0 ]] ; then
-            echo Deleting "$NUM_OLD_FILES" global setting backup file\(s\) older than "$MONTHLYRETENTION" month\(s\) old.
-            find $BACKUPDIR/monthly -not -newermt "$MONTHLYRETENTION month ago" -type f -delete
-        fi
-    fi
-    FILE="$BACKUPDIR/monthly/$DATE.$M"
-
-# Weekly Backup
-elif [[ "$DNOW" = "$WEEKLYDAY" ]] && [[ "$DOWEEKLY" = "yes" ]] ; then
-    echo Weekly Backup
-    echo
-    if [[ $WEEKLYRETENTION -ge 0 ]] ; then
-        # Delete old weekly backups while respecting the set rentention policy.
-        NUM_OLD_FILES=$(find $BACKUPDIR/weekly -depth -not -newermt "$WEEKLYRETENTION week ago" -type f | wc -l)
-        if [[ $NUM_OLD_FILES -gt 0 ]] ; then
-            echo Deleting "$NUM_OLD_FILES" global setting backup file\(s\) older than "$WEEKLYRETENTION" week\(s\) old.
-            find $BACKUPDIR/weekly -not -newermt "$WEEKLYRETENTION week ago" -type f -delete
-        fi
-    fi
-    FILE="$BACKUPDIR/weekly/week.$W.$DATE"
-
-# Daily Backup
-elif [[ $DODAILY = "yes" ]] ; then
-    echo Daily Backup of Databases
-    echo
-    # Delete old daily backups while respecting the set rentention policy.
-    if [[ $DAILYRETENTION -ge 0 ]] ; then
-        NUM_OLD_FILES=$(find $BACKUPDIR/daily -depth -not -newermt "$DAILYRETENTION days ago" -type f | wc -l)
-        if [[ $NUM_OLD_FILES -gt 0 ]] ; then
-            echo Deleting "$NUM_OLD_FILES" global setting backup file\(s\) made in previous weeks.
-            find "$BACKUPDIR/daily" -not -newermt "$DAILYRETENTION days ago" -type f -delete
-        fi
-    fi
-    FILE="$BACKUPDIR/daily/$DATE.$DOW"
 
 # Hourly Backup
-elif [[ $DOHOURLY = "yes" ]] ; then
+if [[ $DOHOURLY = "yes" ]] ; then
     echo Hourly Backup of Databases
     echo
     # Delete old hourly backups while respecting the set rentention policy.
     if [[ $HOURLYRETENTION -ge 0 ]] ; then
-        NUM_OLD_FILES=$(find $BACKUPDIR/hourly -depth -not -newermt "$HOURLYRETENTION hour ago" -type f | wc -l)
+        if [ -n "$TIME_TRAVEL" ]; then
+            retention_time=@$[$(date '+%s') + $(command date -d "$HOURLYRETENTION hour ago" '+%s') - $(command date '+%s')]
+        else
+            retention_time="$HOURLYRETENTION hour ago"
+        fi
+        NUM_OLD_FILES=$(find $BACKUPDIR/hourly -depth -not -newermt "$retention_time" -type f | wc -l)
         if [[ $NUM_OLD_FILES -gt 0 ]] ; then
             echo "Deleting $NUM_OLD_FILES global setting backup file\(s\) made in previous weeks."
-            find $BACKUPDIR/hourly -not -newermt "$HOURLYRETENTION hour ago" -type f -delete
+            find $BACKUPDIR/hourly -not -newermt "$retention_time" -type f -delete
         fi
     fi
     FILE="$BACKUPDIR/hourly/$DATE.$DOW.$HOD"
     # convert timestamp to date: echo $TIMESTAMP | gawk '{print strftime("%c", $0)}'
 
+    dbdump "$FILE" && compression "$FILE"
+fi
+
+# Daily Backup
+if [[ $DODAILY = "yes" ]] && date +%H | grep -q '00' ; then
+    echo Daily Backup of Databases
+    echo
+    # Delete old daily backups while respecting the set rentention policy.
+    if [[ $DAILYRETENTION -ge 0 ]] ; then
+        if [ -n "$TIME_TRAVEL" ]; then
+            retention_time=@$[$(date '+%s') + $(command date -d "$DAILYRETENTION days ago" '+%s') - $(command date '+%s')]
+        else
+            retention_time="$DAILYRETENTION days ago"
+        fi
+        NUM_OLD_FILES=$(find $BACKUPDIR/daily -depth -not -newermt "$retention_time" -type f | wc -l)
+        if [[ $NUM_OLD_FILES -gt 0 ]] ; then
+            echo Deleting "$NUM_OLD_FILES" global setting backup file\(s\) made in previous weeks.
+            find "$BACKUPDIR/daily" -not -newermt "$retention_time" -type f -delete
+        fi
+    fi
+
+    if [[ -n "$FILE" ]] &&  [[ -e "$FILE" ]]; then
+        cp "$FILE" "$BACKUPDIR/daily/$DATE.$DOW"
+    else
+        FILE="$BACKUPDIR/daily/$DATE.$DOW"
+        dbdump "$FILE" && compression "$FILE"
+    fi
+
+fi
+
+# Weekly Backup
+if [[ "$DNOW" = "$WEEKLYDAY" ]] && [[ "$DOWEEKLY" = "yes" ]] && date +%H | grep -q '00'  ; then
+    echo Weekly Backup
+    echo
+    if [[ $WEEKLYRETENTION -ge 0 ]] ; then
+        if [ -n "$TIME_TRAVEL" ]; then
+            retention_time=@$[$(date '+%s') + $(command date -d "$WEEKLYRETENTION week ago" '+%s') - $(command date '+%s')]
+        else
+            retention_time="$WEEKLYRETENTION week ago"
+        fi
+        # Delete old weekly backups while respecting the set rentention policy.
+        NUM_OLD_FILES=$(find $BACKUPDIR/weekly -depth -not -newermt "$retention_time" -type f | wc -l)
+        if [[ $NUM_OLD_FILES -gt 0 ]] ; then
+            echo Deleting "$NUM_OLD_FILES" global setting backup file\(s\) older than "$WEEKLYRETENTION" week\(s\) old.
+            find $BACKUPDIR/weekly -not -newermt "retention_time" -type f -delete
+        fi
+    fi
+
+    if [[ -n "$FILE" ]] &&  [[ -e "$FILE" ]]; then
+        cp "$FILE" "$BACKUPDIR/weekly/week.$W.$DATE"
+    else
+        FILE="$BACKUPDIR/weekly/week.$W.$DATE"
+        dbdump "$FILE" && compression "$FILE"
+    fi
+fi
+
+
+# Monthly Full Backup of all Databases
+if [[ $DOM = "01" ]] && [[ $DOMONTHLY = "yes" ]]  && date +%H | grep -q '00' ; then
+    echo Monthly Full Backup
+    echo
+    # Delete old monthly backups while respecting the set rentention policy.
+    if [[ $MONTHLYRETENTION -ge 0 ]] ; then
+        if [ -n "$TIME_TRAVEL" ]; then
+            retention_time=@$[$(date '+%s') + $(command date -d "$MONTHLYRETENTION month ago" '+%s') - $(command date '+%s')]
+        else
+            retention_time="$MONTHLYRETENTION month ago"
+        fi
+        NUM_OLD_FILES=$(find $BACKUPDIR/monthly -depth -not -newermt "$retention_time" -type f | wc -l)
+        if [[ $NUM_OLD_FILES -gt 0 ]] ; then
+            echo Deleting "$NUM_OLD_FILES" global setting backup file\(s\) older than "$MONTHLYRETENTION" month\(s\) old.
+            find $BACKUPDIR/monthly -not -newermt "$retention_time" -type f -delete
+        fi
+    fi
+
+    if [[ -n "$FILE" ]] &&  [[ -e "$FILE" ]]; then
+        cp "$FILE" "$BACKUPDIR/monthly/$DATE.$M"
+    else
+        FILE="$BACKUPDIR/monthly/$DATE.$M"
+        dbdump "$FILE" && compression "$FILE"
+    fi
 fi
 
 # FILE will not be set if no frequency is selected.
@@ -640,8 +683,6 @@ if [[ -z "$FILE" ]] ; then
   echo "Please set one of DOHOURLY,DODAILY,DOWEEKLY,DOMONTHLY to \"yes\"" 
   exit 1
 fi
-
-dbdump "$FILE" && compression "$FILE"
 
 echo ----------------------------------------------------------------------
 echo "Backup End Time $(date)"
